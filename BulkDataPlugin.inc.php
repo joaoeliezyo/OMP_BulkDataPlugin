@@ -383,13 +383,10 @@ class BulkDataPlugin extends GenericPlugin {
 			$author->setData('includeInBrowse', $aData['include_in_browse']);
 			$author->setData('isPrimaryContact', $aData['is_primary_contact']);
 			
-			$authorService->add($author, $request);
-			
-			// Atualizar configuração isVolumeEditor se necessário
 			if ($aData['is_volume_editor']) {
-				$authorDao = DAORegistry::getDAO('AuthorDAO');
-				$authorDao->updateSetting($author->getId(), 'isVolumeEditor', 1, 'int');
+				$author->setData('isVolumeEditor', 1);
 			}
+			$authorService->add($author, $request);
 		}
 		$logs[] = ['type' => 'success', 'msg' => count($authorsData) . ' autores importados.'];
 	}
@@ -402,11 +399,10 @@ class BulkDataPlugin extends GenericPlugin {
 			$chapter->setData('publicationId', $publication->getId());
 			$chapter->setTitle($cData['title'], $publication->getData('locale'));
 			$chapter->setData('pages', $cData['pages']);
-			$chapterDao->insertObject($chapter);
-			
 			if ($cData['doi']) {
-				$chapterDao->updateSetting($chapter->getId(), 'pub-id::doi', $cData['doi']);
+				$chapter->setStoredPubId('doi', $cData['doi']);
 			}
+			$chapterDao->insertObject($chapter);
 			
 			// Nota: Vinculação de autores aos capítulos requer lógica adicional de ID
 		}
