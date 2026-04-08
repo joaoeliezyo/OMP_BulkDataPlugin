@@ -402,7 +402,7 @@ class BulkDataPlugin extends GenericPlugin {
 			if ($cData['doi']) {
 				$chapter->setStoredPubId('doi', $cData['doi']);
 			}
-			$chapterDao->insertObject($chapter);
+			$chapterDao->insertChapter($chapter);
 			
 			// Nota: Vinculação de autores aos capítulos requer lógica adicional de ID
 		}
