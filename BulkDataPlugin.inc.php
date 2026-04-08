@@ -103,86 +103,90 @@ class BulkDataPlugin extends GenericPlugin {
 		$doi = $publication->getData('pub-id::doi') ?: 'submission_' . $submissionId;
 		$safeDoi = preg_replace('/[^a-zA-Z0-9]/', '', $doi);
 
-		$tempDir = Config::getVar('files', 'files_dir') . '/temp/bulk_' . uniqid();
-		if (!is_dir($tempDir)) mkdir($tempDir, 0777, true);
-
 		$zipFilename = $safeDoi . '.zip';
 		$zipPath = Config::getVar('files', 'files_dir') . '/temp/' . $zipFilename;
 
 		$zip = new ZipArchive();
 		$zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
 
-		// CSV de Metadados
-		$csvPath = $tempDir . '/metadata.csv';
-		$this->_generateMetadataCsv($csvPath, $submission, $publication);
-		$zip->addFile($csvPath, 'metadata.csv');
+		// JSON de Metadados (Fase v7)
+		$metadata = $this->_getSubmissionMetadataAsArray($submission, $publication);
+		$zip->addFromString('metadata.json', json_encode($metadata, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
-		// Arquivos de Suporte
+		// Arquivos (PDF e Capa)
 		$this->_addFilesToZip($zip, $submission, $publication, $context->getId());
 
-		// HTML Snapshot
+		// HTML Snapshot Robusto
 		$htmlContent = $this->_getPublicPageHtml($request, $submission);
 		if ($htmlContent) {
-			$zip->addFromString('pagina_publica_snapshot.html', $htmlContent);
+			$zip->addFromString('public_page_snapshot.html', $htmlContent);
 		}
 
 		$zip->close();
-		unlink($csvPath);
-		rmdir($tempDir);
-
 		return new JSONMessage(true, ['token' => $zipFilename]);
 	}
 
-	private function _generateMetadataCsv($path, $submission, $publication) {
-		$csvHandle = fopen($path, 'w');
-		fputcsv($csvHandle, ['Entry Type', 'ID', 'DOI', 'Title/Heading', 'Authors', 'Pages', 'Abstract']);
+	private function _getSubmissionMetadataAsArray($submission, $publication) {
+		$data = [
+			'id' => $submission->getId(),
+			'doi' => $publication->getData('pub-id::doi'),
+			'title' => $publication->getLocalizedData('title'),
+			'subtitle' => $publication->getLocalizedData('subtitle'),
+			'abstract' => strip_tags($publication->getLocalizedData('abstract')),
+			'language' => $publication->getData('locale'),
+			'date_published' => $publication->getData('datePublished'),
+			'authors' => $this->_getAuthorsMetadata($publication->getData('authors')),
+			'chapters' => []
+		];
 
-		// Livro
-		$authors = [];
-		foreach ($publication->getData('authors') as $author) { $authors[] = $author->getFullName(); }
-		fputcsv($csvHandle, [
-			'BOOK',
-			$submission->getId(),
-			$publication->getData('pub-id::doi') ?: 'N/A',
-			$publication->getLocalizedData('title'),
-			implode('; ', $authors),
-			'',
-			strip_tags($publication->getLocalizedData('abstract')),
-		]);
-
-		// Capítulos (se existirem)
 		$chapterDao = DAORegistry::getDAO('ChapterDAO');
 		$chapters = $chapterDao->getByPublicationId($publication->getId());
 		while ($chapter = $chapters->next()) {
-			$chapterAuthors = [];
-			$chapterAuthorsIter = $chapter->getAuthors();
-			while ($cAuthor = $chapterAuthorsIter->next()) { $chapterAuthors[] = $cAuthor->getFullName(); }
-
-			fputcsv($csvHandle, [
-				'CHAPTER',
-				$chapter->getId(),
-				$chapter->getStoredPubId('doi') ?: 'N/A',
-				$chapter->getLocalizedTitle(),
-				implode('; ', $chapterAuthors),
-				$chapter->getData('pages'),
-				'',
-			]);
+			$data['chapters'][] = [
+				'id' => $chapter->getId(),
+				'doi' => $chapter->getStoredPubId('doi'),
+				'title' => $chapter->getLocalizedTitle(),
+				'subtitle' => $chapter->getLocalizedSubtitle(),
+				'pages' => $chapter->getData('pages'),
+				'abstract' => strip_tags($chapter->getLocalizedData('abstract')),
+				'authors' => $this->_getAuthorsMetadata($chapter->getAuthors()->toArray())
+			];
 		}
-		fclose($csvHandle);
+
+		return $data;
+	}
+
+	private function _getAuthorsMetadata($authors) {
+		$authorsData = [];
+		foreach ($authors as $author) {
+			$authorsData[] = [
+				'first_name' => $author->getLocalizedGivenName(),
+				'last_name' => $author->getLocalizedFamilyName(),
+				'full_name' => $author->getFullName(),
+				'email' => $author->getEmail(),
+				'country' => $author->getData('country'),
+				'affiliation' => $author->getLocalizedData('affiliation'),
+				'orcid' => $author->getOrcid(),
+				'biography' => strip_tags($author->getLocalizedData('biography')),
+				'is_volume_editor' => ($author->getUserGroupId() == 14) // No DB do usuário, 14 é o role_id 65536
+			];
+		}
+		return $authorsData;
 	}
 
 	private function _addFilesToZip($zip, $submission, $publication, $contextId) {
-		// Capa (Multi-idioma)
+		// Capa (OMP 3.3 stores covers in public/presses/{id}/)
 		$coverImage = $publication->getLocalizedData('coverImage');
 		if ($coverImage) {
 			$coverName = $coverImage['uploadName'];
-			$sourcePath = Config::getVar('files', 'files_dir') . '/presses/' . $contextId . '/monographs/' . $submission->getId() . '/' . $coverName;
+			// Note: OMP public path is usually relative to BASE_URL, but here we need internal path.
+			$sourcePath = 'public/presses/' . $contextId . '/' . $coverName;
 			if (file_exists($sourcePath)) {
 				$zip->addFile($sourcePath, 'covers/' . $coverName);
 			}
 		}
 
-		// PDFs
+		// PDFs do Livro
 		$files = Services::get('submissionFile')->getMany(['submissionIds' => [$submission->getId()], 'fileStages' => [SUBMISSION_FILE_PROOF, SUBMISSION_FILE_PRODUCTION_READY]]);
 		foreach ($files as $file) {
 			$sourcePath = Config::getVar('files', 'files_dir') . '/' . $file->getData('path');
@@ -196,22 +200,19 @@ class BulkDataPlugin extends GenericPlugin {
 		$dispatcher = $request->getDispatcher();
 		$url = $dispatcher->url($request, ROUTE_PAGE, null, 'catalog', 'book', array($submission->getId()));
 		
-		// Tentar buscar o HTML via curl (interno)
 		$ch = curl_init();
 		curl_setopt($ch, CURLOPT_URL, $url);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-		curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-		// Ignorar SSL se houver (para dev)
+		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+		curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+		curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BulkDataPlugin/1.0');
 		curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-		curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
 		$html = curl_exec($ch);
 		
 		if (curl_errno($ch)) {
-			error_log('BulkDataPlugin: cURL error capturing page: ' . curl_error($ch));
-			curl_close($ch);
-			return '<!-- Error capturing page via cURL -->';
+			error_log('BulkDataPlugin CURL Error: ' . curl_error($ch));
+			$html = '<!-- Failed to capture: ' . curl_error($ch) . ' -->';
 		}
-		
 		curl_close($ch);
 		return $html;
 	}
@@ -231,5 +232,5 @@ class BulkDataPlugin extends GenericPlugin {
 	}
 
 	public function getDisplayName() { return 'Bulk Data Plugin'; }
-	public function getDescription() { return 'Plugin para exportação massiva v6 (DOI, Capítulos, HTML Snapshot).'; }
+	public function getDescription() { return 'Plugin para exportação massiva v7 (JSON, Capas, Snapshot).'; }
 }
