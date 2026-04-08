@@ -1,4 +1,6 @@
 <?php
+use Illuminate\Database\Capsule\Manager as Capsule;
+
 interface_exists('PKPSubmission');
 import('lib.pkp.classes.submission.PKPSubmission');
 import('lib.pkp.classes.plugins.GenericPlugin');
@@ -287,7 +289,6 @@ class BulkDataPlugin extends GenericPlugin {
 
 	private function _importFiles($tempDir, $submission, $publication, $contextId, $request, &$logs) {
 		$submissionFileDao = DAORegistry::getDAO('SubmissionFileDAO');
-		$dbstr = $submissionFileDao->getDataSource();
 		
 		// 5.1 Processar PDFs
 		$pdfPaths = glob($tempDir . '/pdfs/*.pdf');
@@ -303,9 +304,11 @@ class BulkDataPlugin extends GenericPlugin {
 			foreach ($pdfPaths as $pdfPath) {
 				$fileName = basename($pdfPath);
 				
-				// A. Criar entrada na tabela 'files' usando SQL direto (OMP 3.3 compat)
-				$dbstr->execute('INSERT INTO files (path, mimetype) VALUES (?, ?)', ['temp/' . $fileName, 'application/pdf']);
-				$fileId = $dbstr->getInsertId('files', 'file_id');
+				// A. Criar entrada na tabela 'files'
+				$fileId = Capsule::table('files')->insertGetId([
+					'path' => 'temp/' . $fileName,
+					'mimetype' => 'application/pdf'
+				]);
 
 				// B. Criar entrada na tabela 'submission_files'
 				$submissionFile = new SubmissionFile();
@@ -321,7 +324,10 @@ class BulkDataPlugin extends GenericPlugin {
 				$submissionFileId = $submissionFileDao->insertObject($submissionFile);
 
 				// C. Criar entrada na tabela 'submission_file_revisions'
-				$dbstr->execute('INSERT INTO submission_file_revisions (submission_file_id, file_id) VALUES (?, ?)', [(int)$submissionFileId, (int)$fileId]);
+				Capsule::table('submission_file_revisions')->insert([
+					'submission_file_id' => (int)$submissionFileId,
+					'file_id' => (int)$fileId
+				]);
 
 				// D. Mover arquivo para o local final esperado pelo OMP
 				$targetDir = Config::getVar('files', 'files_dir') . '/submissions/' . $submission->getId() . '/proof/';
@@ -331,7 +337,9 @@ class BulkDataPlugin extends GenericPlugin {
 				copy($pdfPath, $finalPath);
 				
 				// Atualizar o path no DB para refletir o local real
-				$dbstr->execute('UPDATE files SET path = ? WHERE file_id = ?', ['submissions/' . $submission->getId() . '/proof/' . $submissionFileId . '-1.pdf', (int)$fileId]);
+				Capsule::table('files')->where('file_id', $fileId)->update([
+					'path' => 'submissions/' . $submission->getId() . '/proof/' . $submissionFileId . '-1.pdf'
+				]);
 
 				$logs[] = ['type' => 'success', 'msg' => 'PDF Importado e Vinculado: ' . $fileName];
 			}
