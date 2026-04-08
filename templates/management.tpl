@@ -74,8 +74,35 @@
 		</div>
 	</div>
 
-	<div class="pkp_form_section" style="margin-top: 20px;">
-		<button class="pkp_button pkp_button_primary" type="button" id="startExport">Iniciar Processamento dos Selecionados</button>
+	<div class="pkp_form_section" style="margin-top: 20px; display: flex; gap: 10px;">
+		<button class="pkp_button pkp_button_primary" type="button" id="startExport">Iniciar Exportação Massiva</button>
+	</div>
+
+	<hr style="margin: 30px 0; border: 0; border-top: 2px solid #eee;">
+
+	<div id="importSection">
+		<h3>Módulo de Importação Rápida</h3>
+		<p class="description">Suba um arquivo .ZIP exportado pelo plugin para recriar a obra automaticamente.</p>
+		
+		<div style="background: #fdfdfd; padding: 15px; border: 1px dashed #ccc; border-radius: 4px;">
+			<div style="margin-bottom: 15px;">
+				<label><strong>Arquivo ZIP:</strong></label><br>
+				<input type="file" id="importZipFile" accept=".zip">
+			</div>
+			
+			<div style="margin-bottom: 15px;">
+				<label><strong>Modo de Importação:</strong></label><br>
+				<input type="radio" name="importMode" value="submission" checked> Importar como Submissão (Rascunho)<br>
+				<input type="radio" name="importMode" value="publication"> Importar e Publicar Imediatamente (Catálogo)
+			</div>
+
+			<button class="pkp_button" id="btnRunImport">Executar Importação</button>
+		</div>
+
+		<div id="importProcessContainer" class="progress-container" style="background: #eef9ff; border: 1px solid #cce5ff;">
+			<strong>Resultado da Importação:</strong>
+			<div id="importLog" class="log-container" style="max-height: 250px; background: #fff;"></div>
+		</div>
 	</div>
 </div>
 
@@ -261,13 +288,62 @@ $(function() {
 		});
 	}
 
+
 	function addLog(msg) {
 		$('#log').prepend('<div>[' + new Date().toLocaleTimeString() + '] ' + msg + '</div>');
+	}
+
+	function addImportLog(msg, type) {
+		var color = type === 'error' ? 'red' : (type === 'success' ? 'green' : 'black');
+		$('#importLog').prepend('<div style="color:'+color+'">[' + new Date().toLocaleTimeString() + '] ' + msg + '</div>');
 	}
 
 	$('#btnCancel').click(function() {
 		isRunning = false;
 		addLog('⏳ Interrompendo após a conclusão do item atual...');
+	});
+
+	// IMPORT LOGIC
+	$('#btnRunImport').click(function() {
+		var fileInput = $('#importZipFile')[0];
+		if (fileInput.files.length === 0) {
+			alert('Por favor, selecione um arquivo ZIP.');
+			return;
+		}
+
+		var formData = new FormData();
+		formData.append('zipFile', fileInput.files[0]);
+		formData.append('importMode', $('input[name="importMode"]:checked').val());
+
+		$('#importProcessContainer').show();
+		$('#importLog').empty();
+		addImportLog('Iniciando upload e processamento do ZIP...', 'info');
+		$('#btnRunImport').prop('disabled', true);
+
+		$.ajax({
+			url: baseUrl + '&verb=import',
+			type: 'POST',
+			data: formData,
+			processData: false,
+			contentType: false,
+			success: function(res) {
+				$('#btnRunImport').prop('disabled', false);
+				if (res.status) {
+					addImportLog('🏁 Importação finalizada com sucesso!', 'success');
+					if (res.content.logs) {
+						res.content.logs.forEach(function(l) {
+							addImportLog(l.msg, l.type);
+						});
+					}
+				} else {
+					addImportLog('❌ Erro na importação: ' + res.content, 'error');
+				}
+			},
+			error: function() {
+				$('#btnRunImport').prop('disabled', false);
+				addImportLog('❌ Falha crítica de comunicação com o servidor.', 'error');
+			}
+		});
 	});
 });
 </script>
