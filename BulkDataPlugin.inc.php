@@ -287,7 +287,7 @@ class BulkDataPlugin extends GenericPlugin {
 
 	private function _importFiles($tempDir, $submission, $publication, $contextId, $request, &$logs) {
 		$submissionFileDao = DAORegistry::getDAO('SubmissionFileDAO');
-		$fileDao = DAORegistry::getDAO('FileDAO');
+		$dbstr = $submissionFileDao->getDataSource();
 		
 		// 5.1 Processar PDFs
 		$pdfPaths = glob($tempDir . '/pdfs/*.pdf');
@@ -303,11 +303,9 @@ class BulkDataPlugin extends GenericPlugin {
 			foreach ($pdfPaths as $pdfPath) {
 				$fileName = basename($pdfPath);
 				
-				// A. Criar entrada na tabela 'files'
-				$fileObj = $fileDao->newDataObject();
-				$fileObj->setData('mimetype', 'application/pdf');
-				$fileObj->setData('path', 'temp/' . $fileName); // Temporário
-				$fileId = $fileDao->insertObject($fileObj);
+				// A. Criar entrada na tabela 'files' usando SQL direto (OMP 3.3 compat)
+				$dbstr->execute('INSERT INTO files (path, mimetype) VALUES (?, ?)', ['temp/' . $fileName, 'application/pdf']);
+				$fileId = $dbstr->getInsertId('files', 'file_id');
 
 				// B. Criar entrada na tabela 'submission_files'
 				$submissionFile = new SubmissionFile();
@@ -323,12 +321,9 @@ class BulkDataPlugin extends GenericPlugin {
 				$submissionFileId = $submissionFileDao->insertObject($submissionFile);
 
 				// C. Criar entrada na tabela 'submission_file_revisions'
-				// OMP 3.3.0 exige revisão vinculando sub_file_id ao file_id
-				$dbstr = $submissionFileDao->getDataSource();
 				$dbstr->execute('INSERT INTO submission_file_revisions (submission_file_id, file_id) VALUES (?, ?)', [(int)$submissionFileId, (int)$fileId]);
 
 				// D. Mover arquivo para o local final esperado pelo OMP
-				// Padrão: submissions/{subId}/proof/{subFileId}-{revisionId}.pdf
 				$targetDir = Config::getVar('files', 'files_dir') . '/submissions/' . $submission->getId() . '/proof/';
 				if (!is_dir($targetDir)) mkdir($targetDir, 0777, true);
 				
@@ -336,8 +331,7 @@ class BulkDataPlugin extends GenericPlugin {
 				copy($pdfPath, $finalPath);
 				
 				// Atualizar o path no DB para refletir o local real
-				$fileObj->setData('path', 'submissions/' . $submission->getId() . '/proof/' . $submissionFileId . '-1.pdf');
-				$fileDao->updateObject($fileObj);
+				$dbstr->execute('UPDATE files SET path = ? WHERE file_id = ?', ['submissions/' . $submission->getId() . '/proof/' . $submissionFileId . '-1.pdf', (int)$fileId]);
 
 				$logs[] = ['type' => 'success', 'msg' => 'PDF Importado e Vinculado: ' . $fileName];
 			}
