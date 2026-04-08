@@ -2,11 +2,6 @@
 import('lib.pkp.classes.plugins.GenericPlugin');
 
 class BulkDataPlugin extends GenericPlugin {
-	/**
-	 * @palam string $category
-	 * @param string $path
-	 * @param int $mainContextId
-	 */
 	public function register($category, $path, $mainContextId = null) {
 		if (parent::register($category, $path, $mainContextId)) {
 			return true;
@@ -14,9 +9,6 @@ class BulkDataPlugin extends GenericPlugin {
 		return false;
 	}
 
-	/**
-	 * @copydoc Plugin::getActions()
-	 */
 	public function getActions($request, $actionArgs) {
 		import('lib.pkp.classes.linkAction.request.AjaxModal');
 		$router = $request->getRouter();
@@ -36,9 +28,6 @@ class BulkDataPlugin extends GenericPlugin {
 		);
 	}
 
-	/**
-	 * @copydoc GenericPlugin::manage()
-	 */
 	public function manage($args, $request) {
 		$templateMgr = TemplateManager::getManager($request);
 		$templateMgr->assign('pluginName', $this->getName());
@@ -47,121 +36,147 @@ class BulkDataPlugin extends GenericPlugin {
 			case 'settings':
 				return new JSONMessage(true, $templateMgr->fetch($this->getTemplateResource('management.tpl')));
 			
-			case 'export':
-				return $this->_exportToZip($request);
+			case 'list':
+				return $this->_listSubmissions($request);
+
+			case 'prepare':
+				return $this->_prepareZip($request);
+
+			case 'download':
+				return $this->_downloadZip($request);
 		}
 		return parent::manage($args, $request);
 	}
 
 	/**
-	 * Realiza a exportação massiva para um arquivo ZIP
-	 * @param Request $request
+	 * Lista submissões publicadas com ID, Título e DOI
 	 */
-	private function _exportToZip($request) {
+	private function _listSubmissions($request) {
 		$context = $request->getContext();
 		$submissionService = Services::get('submission');
 		
 		$submissions = $submissionService->getMany([
 			'contextId' => $context->getId(),
-			'status' => STATUS_PUBLISHED,
+			'status' => STATUS_PUBLISHED, // Corrigido para a constante carregada pelo serviço
 		]);
 
-		$tempDir = sys_get_temp_dir() . '/omp_bulk_' . uniqid();
-		mkdir($tempDir);
-		$filesDir = $tempDir . '/files';
-		mkdir($filesDir);
-
-		$csvData = [];
-		$csvData[] = ['Submission ID', 'Publication ID', 'Title', 'Abstract', 'Authors', 'Cover File', 'PDF Files'];
-
-		$zipFilename = 'omp_export_' . date('Ymd_His') . '.zip';
-		$zipPath = sys_get_temp_dir() . '/' . $zipFilename;
-		$zip = new ZipArchive();
-		$zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
-
+		$data = [];
 		foreach ($submissions as $submission) {
 			$publication = $submission->getCurrentPublication();
-			
-			// Autores
-			$authors = [];
-			foreach ($publication->getData('authors') as $author) {
-				$authors[] = $author->getFullName();
-			}
-
-			// Capa
-			$coverFile = '';
-			$coverImage = $publication->getData('coverImage', 'pt_BR');
-			if ($coverImage) {
-				$coverName = $coverImage['uploadName'];
-				$sourcePath = Config::getVar('files', 'files_dir') . '/presses/' . $context->getId() . '/monographs/' . $submission->getId() . '/' . $coverName;
-				if (file_exists($sourcePath)) {
-					$zip->addFile($sourcePath, 'covers/' . $coverName);
-					$coverFile = 'covers/' . $coverName;
-				}
-			}
-
-			// PDFs de Prova / Produção
-			$pdfFiles = [];
-			$submissionFileService = Services::get('submissionFile');
-			$files = $submissionFileService->getMany([
-				'submissionIds' => [$submission->getId()],
-				'fileStages' => [SUBMISSION_FILE_PROOF, SUBMISSION_FILE_PRODUCTION_READY],
-			]);
-
-			foreach ($files as $file) {
-				$sourcePath = Config::getVar('files', 'files_dir') . '/' . $file->getData('path');
-				if (file_exists($sourcePath)) {
-					$destName = 'pdfs/' . $submission->getId() . '_' . $file->getData('fileId') . '.pdf';
-					$zip->addFile($sourcePath, $destName);
-					$pdfFiles[] = $destName;
-				}
-			}
-
-			$csvData[] = [
-				$submission->getId(),
-				$publication->getId(),
-				$publication->getLocalizedData('title'),
-				strip_tags($publication->getLocalizedData('abstract')),
-				implode('; ', $authors),
-				$coverFile,
-				implode('; ', $pdfFiles),
+			$data[] = [
+				'id' => $submission->getId(),
+				'title' => $publication->getLocalizedData('title'),
+				'doi' => $publication->getData('pub-id::doi') ?: 'N/A',
 			];
 		}
 
-		// Adicionar CSV ao ZIP
-		$csvHandle = fopen($tempDir . '/metadata.csv', 'w');
-		foreach ($csvData as $row) {
-			fputcsv($csvHandle, $row);
-		}
-		fclose($csvHandle);
-		$zip->addFile($tempDir . '/metadata.csv', 'metadata.csv');
-
-		$zip->close();
-
-		// Download
-		header('Content-Type: application/zip');
-		header('Content-Disposition: attachment; filename="' . $zipFilename . '"');
-		header('Content-Length: ' . filesize($zipPath));
-		readfile($zipPath);
-
-		// Cleanup
-		unlink($zipPath);
-		array_map('unlink', glob("$tempDir/*.*"));
-		rmdir($tempDir);
-		exit;
+		return new JSONMessage(true, $data);
 	}
 
 	/**
-	 * @return string Nome exibido do plugin
+	 * Prepara um ZIP individual para uma submissão
 	 */
+	private function _prepareZip($request) {
+		$submissionId = (int) $request->getUserVar('id');
+		$context = $request->getContext();
+		
+		$submission = Services::get('submission')->get($submissionId);
+		if (!$submission || $submission->getData('contextId') != $context->getId()) {
+			return new JSONMessage(false, 'Submissão inválida.');
+		}
+
+		$publication = $submission->getCurrentPublication();
+		$tempDir = Config::getVar('files', 'files_dir') . '/temp/bulk_' . uniqid();
+		if (!is_dir($tempDir)) mkdir($tempDir, 0777, true);
+
+		$zipFilename = 'submission_' . $submissionId . '_' . uniqid() . '.zip';
+		$zipPath = Config::getVar('files', 'files_dir') . '/temp/' . $zipFilename;
+
+		$zip = new ZipArchive();
+		$zip->open($zipPath, ZipArchive::CREATE);
+
+		// CSV Individual
+		$csvPath = $tempDir . '/metadata.csv';
+		$csvHandle = fopen($csvPath, 'w');
+		fputcsv($csvHandle, ['ID', 'Title', 'DOI', 'Authors', 'Abstract']);
+		
+		$authors = [];
+		foreach ($publication->getData('authors') as $author) {
+			$authors[] = $author->getFullName();
+		}
+
+		fputcsv($csvHandle, [
+			$submission->getId(),
+			$publication->getLocalizedData('title'),
+			$publication->getData('pub-id::doi') ?: 'N/A',
+			implode('; ', $authors),
+			strip_tags($publication->getLocalizedData('abstract')),
+		]);
+		fclose($csvHandle);
+		$zip->addFile($csvPath, 'metadata.csv');
+
+		// Arquivos (PDF e Capa)
+		$this->_addFilesToZip($zip, $submission, $publication, $context->getId());
+
+		$zip->close();
+		
+		// Cleanup CSV temp
+		unlink($csvPath);
+		rmdir($tempDir);
+
+		return new JSONMessage(true, ['token' => $zipFilename]);
+	}
+
+	private function _addFilesToZip($zip, $submission, $publication, $contextId) {
+		// Capa
+		$coverImage = $publication->getData('coverImage', 'pt_BR');
+		if ($coverImage) {
+			$coverName = $coverImage['uploadName'];
+			$sourcePath = Config::getVar('files', 'files_dir') . '/presses/' . $contextId . '/monographs/' . $submission->getId() . '/' . $coverName;
+			if (file_exists($sourcePath)) {
+				$zip->addFile($sourcePath, 'covers/' . $coverName);
+			}
+		}
+
+		// PDFs
+		$files = Services::get('submissionFile')->getMany([
+			'submissionIds' => [$submission->getId()],
+			'fileStages' => [SUBMISSION_FILE_PROOF, SUBMISSION_FILE_PRODUCTION_READY],
+		]);
+
+		foreach ($files as $file) {
+			$sourcePath = Config::getVar('files', 'files_dir') . '/' . $file->getData('path');
+			if (file_exists($sourcePath)) {
+				$zip->addFile($sourcePath, 'pdfs/' . basename($sourcePath));
+			}
+		}
+	}
+
+	/**
+	 * Serve o arquivo e o deleta
+	 */
+	private function _downloadZip($request) {
+		$token = $request->getUserVar('token');
+		$zipPath = Config::getVar('files', 'files_dir') . '/temp/' . $token;
+
+		if (!file_exists($zipPath) || strpos($token, '..') !== false) {
+			fatalError('Arquivo expirado ou inválido.');
+		}
+
+		header('Content-Type: application/zip');
+		header('Content-Disposition: attachment; filename="export_' . $token . '"');
+		header('Content-Length: ' . filesize($zipPath));
+		
+		readfile($zipPath);
+		unlink($zipPath);
+		exit;
+	}
+
 	public function getDisplayName() {
 		return 'Bulk Data Plugin';
 	}
 
-	/**
-	 * @return string Descrição do plugin
-	 */
 	public function getDescription() {
-		return 'Plugin para exportação massiva e submissão rápida de dados (CSV/ZIP) no OMP.';
+		return 'Plugin para exportação massiva em cascata e submissão rápida no OMP.';
 	}
 }
