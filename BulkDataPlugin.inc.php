@@ -2,6 +2,11 @@
 interface_exists('PKPSubmission');
 import('lib.pkp.classes.submission.PKPSubmission');
 import('lib.pkp.classes.plugins.GenericPlugin');
+import('lib.pkp.classes.submission.Submission');
+import('lib.pkp.classes.publication.Publication');
+import('classes.monograph.Author');
+import('classes.submission.Chapter');
+import('lib.pkp.classes.submissionFile.SubmissionFile');
 
 class BulkDataPlugin extends GenericPlugin {
 	public function register($category, $path, $mainContextId = null) {
@@ -232,26 +237,26 @@ class BulkDataPlugin extends GenericPlugin {
 		try {
 			// 1. Criar Submissão
 			$submissionService = Services::get('submission');
-			$submission = $submissionService->newDataObject([
-				'contextId' => $context->getId(),
-				'locale' => $data['language'] ?: $context->getPrimaryLocale(),
-				'status' => STATUS_QUEUED,
-			]);
+			$submission = new Submission();
+			$submission->setData('contextId', $context->getId());
+			$submission->setData('locale', $data['language'] ?: $context->getPrimaryLocale());
+			$submission->setData('status', STATUS_QUEUED);
+			
 			$submission = $submissionService->add($submission, $request);
 			$logs[] = ['type' => 'success', 'msg' => 'Submissão #'.$submission->getId().' criada.'];
 
 			// 2. Criar Publicação
 			$publicationService = Services::get('publication');
-			$publication = $publicationService->newDataObject([
-				'submissionId' => $submission->getId(),
-				'title' => [$submission->getLocale() => $data['title']],
-				'abstract' => [$submission->getLocale() => $data['abstract']],
-				'prefix' => '',
-				'subtitle' => [$submission->getLocale() => $data['subtitle']],
-				'status' => STATUS_QUEUED,
-				'pub-id::doi' => $data['doi'],
-				'datePublished' => $data['date_published'],
-			]);
+			$publication = new Publication();
+			$publication->setData('submissionId', $submission->getId());
+			$publication->setData('title', [$submission->getLocale() => $data['title']]);
+			$publication->setData('abstract', [$submission->getLocale() => $data['abstract']]);
+			$publication->setData('prefix', '');
+			$publication->setData('subtitle', [$submission->getLocale() => $data['subtitle']]);
+			$publication->setData('status', STATUS_QUEUED);
+			$publication->setData('pub-id::doi', $data['doi']);
+			$publication->setData('datePublished', $data['date_published']);
+
 			$publication = $publicationService->add($publication, $request);
 			$logs[] = ['type' => 'success', 'msg' => 'Publicação configurada com metadados.'];
 
@@ -301,13 +306,12 @@ class BulkDataPlugin extends GenericPlugin {
 				$stagePath = Config::getVar('files', 'files_dir') . '/temp/' . $fileName;
 				copy($pdfPath, $stagePath);
 
-				$submissionFile = $submissionFileService->newDataObject([
-					'submissionId' => $submission->getId(),
-					'uploaderUserId' => $request->getUser()->getId(),
-					'fileStage' => 17, // SUBMISSION_FILE_PROOF
-					'assocType' => ASSOC_TYPE_REPRESENTATION,
-					'assocId' => $publicationFormat->getId(),
-				]);
+				$submissionFile = new SubmissionFile();
+				$submissionFile->setData('submissionId', $submission->getId());
+				$submissionFile->setData('uploaderUserId', $request->getUser()->getId());
+				$submissionFile->setData('fileStage', 17); // SUBMISSION_FILE_PROOF
+				$submissionFile->setData('assocType', ASSOC_TYPE_REPRESENTATION);
+				$submissionFile->setData('assocId', $publicationFormat->getId());
 
 				$submissionFile = $submissionFileService->add($submissionFile, $stagePath);
 				$logs[] = ['type' => 'success', 'msg' => 'PDF Importado: ' . $fileName];
@@ -366,19 +370,18 @@ class BulkDataPlugin extends GenericPlugin {
 			}
 			if (!$userGroupId) $userGroupId = 15; // Fallback para Autor
 
-			$author = $authorService->newDataObject([
-				'publicationId' => $publication->getId(),
-				'email' => $aData['email'],
-				'givenName' => [$publication->getData('locale') => $aData['first_name']],
-				'familyName' => [$publication->getData('locale') => $aData['last_name']],
-				'country' => $aData['country'],
-				'orcid' => $aData['orcid'],
-				'url' => $aData['url'],
-				'biography' => [$publication->getData('locale') => $aData['biography']],
-				'userGroupId' => $userGroupId,
-				'includeInBrowse' => $aData['include_in_browse'],
-				'isPrimaryContact' => $aData['is_primary_contact'],
-			]);
+			$author = new Author();
+			$author->setData('publicationId', $publication->getId());
+			$author->setData('email', $aData['email']);
+			$author->setData('givenName', [$publication->getData('locale') => $aData['first_name']]);
+			$author->setData('familyName', [$publication->getData('locale') => $aData['last_name']]);
+			$author->setData('country', $aData['country']);
+			$author->setData('orcid', $aData['orcid']);
+			$author->setData('url', $aData['url']);
+			$author->setData('biography', [$publication->getData('locale') => $aData['biography']]);
+			$author->setData('userGroupId', $userGroupId);
+			$author->setData('includeInBrowse', $aData['include_in_browse']);
+			$author->setData('isPrimaryContact', $aData['is_primary_contact']);
 			
 			$authorService->add($author, $request);
 			
@@ -395,7 +398,7 @@ class BulkDataPlugin extends GenericPlugin {
 		if (empty($chaptersData)) return;
 		$chapterDao = DAORegistry::getDAO('ChapterDAO');
 		foreach ($chaptersData as $cData) {
-			$chapter = $chapterDao->newDataObject();
+			$chapter = new Chapter();
 			$chapter->setData('publicationId', $publication->getId());
 			$chapter->setTitle($cData['title'], $publication->getData('locale'));
 			$chapter->setData('pages', $cData['pages']);
