@@ -193,8 +193,8 @@ class BulkDataPlugin extends GenericPlugin {
 	}
 
 	private function _getPublicPageHtml($request, $submission) {
-		$router = $request->getRouter();
-		$url = $router->url($request, null, 'catalog', 'book', [$submission->getId()]);
+		$dispatcher = $request->getDispatcher();
+		$url = $dispatcher->url($request, ROUTE_PAGE, null, 'catalog', 'book', array($submission->getId()));
 		
 		// Tentar buscar o HTML via curl (interno)
 		$ch = curl_init();
