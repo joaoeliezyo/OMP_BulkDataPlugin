@@ -2,11 +2,11 @@
 interface_exists('PKPSubmission');
 import('lib.pkp.classes.submission.PKPSubmission');
 import('lib.pkp.classes.plugins.GenericPlugin');
-import('lib.pkp.classes.submission.Submission');
-import('lib.pkp.classes.publication.Publication');
+import('classes.submission.Submission');
+import('classes.publication.Publication');
 import('classes.monograph.Author');
-import('classes.submission.Chapter');
-import('lib.pkp.classes.submissionFile.SubmissionFile');
+import('classes.monograph.Chapter');
+import('lib.pkp.classes.submission.SubmissionFile');
 
 class BulkDataPlugin extends GenericPlugin {
 	public function register($category, $path, $mainContextId = null) {
