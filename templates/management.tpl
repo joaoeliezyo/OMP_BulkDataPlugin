@@ -81,7 +81,7 @@
 
 <script type="text/javascript">
 $(function() {
-	var baseUrl = '{url op="manage" category="generic" plugin=$pluginName}';
+
 	var currentOffset = 0;
 	var currentCount = 10;
 	var totalItems = 0;
