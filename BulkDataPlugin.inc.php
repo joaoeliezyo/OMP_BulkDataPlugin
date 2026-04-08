@@ -308,7 +308,7 @@ class BulkDataPlugin extends GenericPlugin {
 				$fileId = Capsule::table('files')->insertGetId([
 					'path' => 'temp/' . $fileName,
 					'mimetype' => 'application/pdf'
-				]);
+				], 'file_id');
 
 				// B. Criar entrada na tabela 'submission_files'
 				$submissionFile = new SubmissionFile();
