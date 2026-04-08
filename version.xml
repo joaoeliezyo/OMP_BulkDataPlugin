@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plugin SYSTEM "../../../lib/pkp/dtd/pluginVersion.dtd">
+<version>
+	<application>omp</application>
+	<type>plugins.generic</type>
+	<release>1.0.0.0</release>
+	<date>2026-04-08</date>
+	<lazy-load>0</lazy-load>
+	<class>plugins.generic.BulkDataPlugin.BulkDataPlugin</class>
+</version>
