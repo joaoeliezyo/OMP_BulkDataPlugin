@@ -118,6 +118,7 @@ class BulkDataPlugin extends GenericPlugin {
 			'abstract' => strip_tags($publication->getLocalizedData('abstract')),
 			'language' => $publication->getData('locale'),
 			'date_published' => $publication->getData('datePublished'),
+			'work_type' => $submission->getData('workType'), // 0 = Authored, 1 = Edited Volume
 			'authors' => $this->_getAuthorsMetadata($publication->getData('authors'), $contextId),
 			'chapters' => []
 		];
@@ -243,6 +244,9 @@ class BulkDataPlugin extends GenericPlugin {
 			$submission->setData('contextId', $context->getId());
 			$submission->setData('locale', $data['language'] ?: $context->getPrimaryLocale());
 			$submission->setData('status', STATUS_QUEUED);
+			$submission->setData('submissionProgress', 0); // 0 = Wizard concluído
+			$submission->setData('stageId', 1); // WORKFLOW_STAGE_ID_SUBMISSION = 1
+			$submission->setData('workType', isset($data['work_type']) ? $data['work_type'] : (empty($data['chapters']) ? 0 : 1));
 			
 			$submission = $submissionService->add($submission, $request);
 			$logs[] = ['type' => 'success', 'msg' => 'Submissão #'.$submission->getId().' criada.'];
