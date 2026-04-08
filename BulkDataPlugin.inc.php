@@ -109,14 +109,14 @@ class BulkDataPlugin extends GenericPlugin {
 		$zip = new ZipArchive();
 		$zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
 
-		// JSON de Metadados (Fase v7)
-		$metadata = $this->_getSubmissionMetadataAsArray($submission, $publication);
+		// Metadados JSON (Completo v8)
+		$metadata = $this->_getSubmissionMetadataAsArray($submission, $publication, $context->getId());
 		$zip->addFromString('metadata.json', json_encode($metadata, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
-		// Arquivos (PDF e Capa)
+		// Arquivos
 		$this->_addFilesToZip($zip, $submission, $publication, $context->getId());
 
-		// HTML Snapshot Robusto
+		// HTML Snapshot Direto (Correção Docker Port)
 		$htmlContent = $this->_getPublicPageHtml($request, $submission);
 		if ($htmlContent) {
 			$zip->addFromString('public_page_snapshot.html', $htmlContent);
@@ -126,7 +126,7 @@ class BulkDataPlugin extends GenericPlugin {
 		return new JSONMessage(true, ['token' => $zipFilename]);
 	}
 
-	private function _getSubmissionMetadataAsArray($submission, $publication) {
+	private function _getSubmissionMetadataAsArray($submission, $publication, $contextId) {
 		$data = [
 			'id' => $submission->getId(),
 			'doi' => $publication->getData('pub-id::doi'),
@@ -135,7 +135,7 @@ class BulkDataPlugin extends GenericPlugin {
 			'abstract' => strip_tags($publication->getLocalizedData('abstract')),
 			'language' => $publication->getData('locale'),
 			'date_published' => $publication->getData('datePublished'),
-			'authors' => $this->_getAuthorsMetadata($publication->getData('authors')),
+			'authors' => $this->_getAuthorsMetadata($publication->getData('authors'), $contextId),
 			'chapters' => []
 		];
 
@@ -149,44 +149,52 @@ class BulkDataPlugin extends GenericPlugin {
 				'subtitle' => $chapter->getLocalizedSubtitle(),
 				'pages' => $chapter->getData('pages'),
 				'abstract' => strip_tags($chapter->getLocalizedData('abstract')),
-				'authors' => $this->_getAuthorsMetadata($chapter->getAuthors()->toArray())
+				'authors' => $this->_getAuthorsMetadata($chapter->getAuthors()->toArray(), $contextId)
 			];
 		}
-
 		return $data;
 	}
 
-	private function _getAuthorsMetadata($authors) {
+	private function _getAuthorsMetadata($authors, $contextId) {
 		$authorsData = [];
+		$userGroupDao = DAORegistry::getDAO('UserGroupDAO');
+
 		foreach ($authors as $author) {
+			$userGroup = $userGroupDao->getById($author->getUserGroupId(), $contextId);
+			$roleName = $userGroup ? $userGroup->getLocalizedName() : 'N/A';
+
 			$authorsData[] = [
 				'first_name' => $author->getLocalizedGivenName(),
 				'last_name' => $author->getLocalizedFamilyName(),
 				'full_name' => $author->getFullName(),
+				'preferred_public_name' => $author->getLocalizedData('preferredPublicName'),
 				'email' => $author->getEmail(),
 				'country' => $author->getData('country'),
 				'affiliation' => $author->getLocalizedData('affiliation'),
+				'url' => $author->getData('url'),
 				'orcid' => $author->getOrcid(),
 				'biography' => strip_tags($author->getLocalizedData('biography')),
-				'is_volume_editor' => ($author->getUserGroupId() == 14) // No DB do usuário, 14 é o role_id 65536
+				'role_name' => $roleName,
+				'is_primary_contact' => (bool) $author->getPrimaryContact(),
+				'include_in_browse' => (bool) $author->getIncludeInBrowse(),
+				'is_volume_editor' => (bool) $author->getData('isVolumeEditor')
 			];
 		}
 		return $authorsData;
 	}
 
 	private function _addFilesToZip($zip, $submission, $publication, $contextId) {
-		// Capa (OMP 3.3 stores covers in public/presses/{id}/)
+		// Capa
 		$coverImage = $publication->getLocalizedData('coverImage');
 		if ($coverImage) {
 			$coverName = $coverImage['uploadName'];
-			// Note: OMP public path is usually relative to BASE_URL, but here we need internal path.
 			$sourcePath = 'public/presses/' . $contextId . '/' . $coverName;
 			if (file_exists($sourcePath)) {
 				$zip->addFile($sourcePath, 'covers/' . $coverName);
 			}
 		}
 
-		// PDFs do Livro
+		// PDFs
 		$files = Services::get('submissionFile')->getMany(['submissionIds' => [$submission->getId()], 'fileStages' => [SUBMISSION_FILE_PROOF, SUBMISSION_FILE_PRODUCTION_READY]]);
 		foreach ($files as $file) {
 			$sourcePath = Config::getVar('files', 'files_dir') . '/' . $file->getData('path');
@@ -200,8 +208,14 @@ class BulkDataPlugin extends GenericPlugin {
 		$dispatcher = $request->getDispatcher();
 		$url = $dispatcher->url($request, ROUTE_PAGE, null, 'catalog', 'book', array($submission->getId()));
 		
+		// Docker Fix: Se a URL contiver porta externa (8080), substituir por porta interna (80)
+		$internalUrl = str_replace(':8080', '', $url);
+		if (strpos($internalUrl, 'localhost') !== false && strpos($internalUrl, 'http://') === 0) {
+			// Garantir que estamos chamando o loopback interno
+		}
+
 		$ch = curl_init();
-		curl_setopt($ch, CURLOPT_URL, $url);
+		curl_setopt($ch, CURLOPT_URL, $internalUrl);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
 		curl_setopt($ch, CURLOPT_TIMEOUT, 15);
@@ -210,8 +224,8 @@ class BulkDataPlugin extends GenericPlugin {
 		$html = curl_exec($ch);
 		
 		if (curl_errno($ch)) {
-			error_log('BulkDataPlugin CURL Error: ' . curl_error($ch));
-			$html = '<!-- Failed to capture: ' . curl_error($ch) . ' -->';
+			error_log('BulkDataPlugin CURL Error on ' . $internalUrl . ': ' . curl_error($ch));
+			$html = '<!-- Failed to capture: ' . curl_error($ch) . ' from URL ' . $internalUrl . ' -->';
 		}
 		curl_close($ch);
 		return $html;
@@ -232,5 +246,5 @@ class BulkDataPlugin extends GenericPlugin {
 	}
 
 	public function getDisplayName() { return 'Bulk Data Plugin'; }
-	public function getDescription() { return 'Plugin para exportação massiva v7 (JSON, Capas, Snapshot).'; }
+	public function getDescription() { return 'Plugin para exportação massiva v8 (Fidelidade Total de Metadados).'; }
 }
