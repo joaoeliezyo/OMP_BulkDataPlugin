@@ -1,4 +1,6 @@
 <?php
+interface_exists('PKPSubmission'); // Force load constants if not loaded
+import('lib.pkp.classes.submission.PKPSubmission');
 import('lib.pkp.classes.plugins.GenericPlugin');
 
 class BulkDataPlugin extends GenericPlugin {
@@ -39,6 +41,9 @@ class BulkDataPlugin extends GenericPlugin {
 			case 'list':
 				return $this->_listSubmissions($request);
 
+			case 'allIds':
+				return $this->_getAllIds($request);
+
 			case 'prepare':
 				return $this->_prepareZip($request);
 
@@ -49,16 +54,30 @@ class BulkDataPlugin extends GenericPlugin {
 	}
 
 	/**
-	 * Lista submissões publicadas com ID, Título e DOI
+	 * Lista submissões com suporte a paginação e busca
 	 */
 	private function _listSubmissions($request) {
 		$context = $request->getContext();
 		$submissionService = Services::get('submission');
 		
-		$submissions = $submissionService->getMany([
+		$count = (int) ($request->getUserVar('count') ?: 10);
+		$offset = (int) ($request->getUserVar('offset') ?: 0);
+		$searchPhrase = $request->getUserVar('searchPhrase');
+
+		$params = [
 			'contextId' => $context->getId(),
-			'status' => STATUS_PUBLISHED, // Corrigido para a constante carregada pelo serviço
-		]);
+			'status' => STATUS_PUBLISHED,
+			'searchPhrase' => $searchPhrase,
+		];
+
+		// Obter total
+		$totalSubmissions = $submissionService->getMany(array_merge($params, ['count' => 5000]))->count(); 
+		// Nota: getMany retorna uma coleção em 3.3.0 que pode ser contada.
+		
+		$submissions = $submissionService->getMany(array_merge($params, [
+			'count' => $count,
+			'offset' => $offset,
+		]));
 
 		$data = [];
 		foreach ($submissions as $submission) {
@@ -70,7 +89,30 @@ class BulkDataPlugin extends GenericPlugin {
 			];
 		}
 
-		return new JSONMessage(true, $data);
+		return new JSONMessage(true, [
+			'items' => $data,
+			'total' => $totalSubmissions,
+			'page' => floor($offset / $count) + 1,
+			'totalPages' => ceil($totalSubmissions / $count),
+		]);
+	}
+
+	/**
+	 * Retorna todos os IDs filtrados (para seleção global)
+	 */
+	private function _getAllIds($request) {
+		$context = $request->getContext();
+		$searchPhrase = $request->getUserVar('searchPhrase');
+
+		$params = [
+			'contextId' => $context->getId(),
+			'status' => STATUS_PUBLISHED,
+			'searchPhrase' => $searchPhrase,
+			'count' => 5000, // Limite razoável para IDs
+		];
+
+		$submissionIds = Services::get('submission')->getIds($params);
+		return new JSONMessage(true, $submissionIds);
 	}
 
 	/**
@@ -177,6 +219,6 @@ class BulkDataPlugin extends GenericPlugin {
 	}
 
 	public function getDescription() {
-		return 'Plugin para exportação massiva em cascata e submissão rápida no OMP.';
+		return 'Plugin para exportação massiva em cascata e submissão rápida no OMP com paginação.';
 	}
 }

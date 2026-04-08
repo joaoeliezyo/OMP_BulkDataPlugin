@@ -2,7 +2,7 @@
  * plugins/generic/BulkDataPlugin/templates/management.tpl
  *}
 <style>
-	.bulk-data-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+	.bulk-data-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
 	.bulk-data-table th, .bulk-data-table td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 13px; }
 	.bulk-data-table th { background-color: #f5f5f5; }
 	.progress-container { margin-top: 20px; display: none; padding: 15px; background: #f9f9f9; border: 1px solid #eee; }
@@ -12,21 +12,37 @@
 	.status-working { color: #007ab2; font-weight: bold; }
 	.status-done { color: #2d862d; }
 	.status-error { color: #d9534f; }
+	.pagination-controls { margin-top: 15px; display: flex; align-items: center; justify-content: space-between; background: #f1f1f1; padding: 10px; border-radius: 4px; }
+	.global-select-banner { display: none; background: #fff3cd; border: 1px solid #ffeeba; padding: 8px; margin-bottom: 10px; font-size: 13px; text-align: center; }
+	.global-select-banner a { color: #856404; font-weight: bold; text-decoration: underline; cursor: pointer; }
 </style>
 
 <div id="bulkDataPluginHeader">
-	<h3>Exportação Seletiva em Cascata</h3>
-	<p class="description">Selecione as publicações que deseja baixar. O sistema processará uma por uma para garantir estabilidade.</p>
+	<h3>Exportação Seletiva e Massiva (v5)</h3>
+	<p class="description">Selecione as publicações. O sistema suporta paginação para editoras com grandes acervos.</p>
 </div>
 
 <div class="pkp_form_area">
-	<div id="tableTools" style="margin-bottom: 10px;">
-		<button class="pkp_button" id="btnSelectAll">Marcar Todos</button>
-		<button class="pkp_button" id="btnDeselectAll">Desmarcar Todos</button>
-		<input type="text" id="pluginSearch" placeholder="Buscar título ou DOI..." style="width: 250px; padding: 4px;">
+	<div id="tableTools" style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+		<div>
+			<input type="text" id="pluginSearch" placeholder="Buscar título ou DOI..." style="width: 200px; padding: 4px;">
+			<select id="itemsPerPage" style="padding: 4px; margin-left: 10px;">
+				<option value="10">10 por página</option>
+				<option value="25">25 por página</option>
+				<option value="50">50 por página</option>
+				<option value="100">100 por página</option>
+			</select>
+		</div>
+		<div style="font-size: 13px; font-weight: bold;">
+			Total: <span id="totalItems">0</span> publicações | Página <span id="currentPageDisplay">1</span> de <span id="totalPagesDisplay">1</span>
+		</div>
 	</div>
 
-	<div style="max-height: 300px; overflow-y: auto;">
+	<div id="globalSelectBanner" class="global-select-banner">
+		Todas as publicações desta página estão marcadas. <a id="btnSelectGlobal">Selecionar todas as <span class="total-count-text">...</span> publicações da editora?</a>
+	</div>
+
+	<div style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd;">
 		<table class="bulk-data-table" id="submissionTable">
 			<thead>
 				<tr>
@@ -38,42 +54,68 @@
 				</tr>
 			</thead>
 			<tbody id="submissionListBody">
-				<tr><td colspan="5">Carregando publicações...</td></tr>
+				<tr><td colspan="5">Carregando...</td></tr>
 			</tbody>
 		</table>
 	</div>
 
+	<div class="pagination-controls">
+		<button class="pkp_button" id="btnPrevPage">&larr; Anterior</button>
+		<span>Página <span id="currentPageInd">1</span></span>
+		<button class="pkp_button" id="btnNextPage">Próxima &rarr;</button>
+	</div>
+
 	<div class="progress-container" id="processContainer">
-		<strong>Progresso da Execução: <span id="progressText">0/0</span></strong>
+		<strong>Progresso do Lote: <span id="progressText">0/0</span></strong>
 		<progress id="progressBar" value="0" max="100"></progress>
 		<div id="log" class="log-container"></div>
 		<div style="margin-top: 10px;">
-			<button class="pkp_button pkp_button_destructive" id="btnCancel">Interromper Processo</button>
+			<button class="pkp_button pkp_button_destructive" id="btnCancel">Interromper Download</button>
 		</div>
 	</div>
 
 	<div class="pkp_form_section" style="margin-top: 20px;">
-		<button class="pkp_button pkp_button_primary" type="button" id="startExport">Iniciar Download em Massa</button>
+		<button class="pkp_button pkp_button_primary" type="button" id="startExport">Iniciar Processamento dos Selecionados</button>
 	</div>
 </div>
 
 <script type="text/javascript">
 $(function() {
-	var selectedIds = [];
-	var isRunning = false;
-	var currentIndex = 0;
-	var $body = $('#submissionListBody');
 	var baseUrl = '{url op="manage" category="generic" plugin=$pluginName}';
+	var currentOffset = 0;
+	var currentCount = 10;
+	var totalItems = 0;
+	var totalPages = 1;
+	var selectedIds = new Set();
+	var isGlobalSelection = false;
+	var isRunning = false;
+	var queue = [];
+	var currentIndex = 0;
 
-	// Carregar a lista inicial
-	function loadList() {
-		$.get(baseUrl + '&verb=list', function(res) {
+	function loadPage() {
+		var search = $('#pluginSearch').val();
+		$('#submissionListBody').html('<tr><td colspan="5">Carregando...</td></tr>');
+		
+		$.get(baseUrl + '&verb=list', {
+			offset: currentOffset,
+			count: currentCount,
+			searchPhrase: search
+		}, function(res) {
 			if (res.status) {
-				$body.empty();
-				res.content.forEach(function(item) {
+				var data = res.content;
+				totalItems = data.total;
+				totalPages = data.totalPages;
+				
+				$('#totalItems, .total-count-text').text(totalItems);
+				$('#currentPageDisplay, #currentPageInd').text(data.page);
+				$('#totalPagesDisplay').text(totalPages);
+				
+				var $body = $('#submissionListBody').empty();
+				data.items.forEach(function(item) {
+					var checked = (isGlobalSelection || selectedIds.has(String(item.id))) ? 'checked' : '';
 					$body.append(
 						'<tr data-id="'+item.id+'">' +
-							'<td><input type="checkbox" class="sub-check" value="'+item.id+'"></td>' +
+							'<td><input type="checkbox" class="sub-check" value="'+item.id+'" '+checked+'></td>' +
 							'<td>'+item.id+'</td>' +
 							'<td>'+item.doi+'</td>' +
 							'<td class="title-cell">'+item.title+'</td>' +
@@ -81,104 +123,151 @@ $(function() {
 						'</tr>'
 					);
 				});
+				updateBanner();
 			}
 		});
 	}
-	loadList();
+	loadPage();
 
-	// Filtro de busca
-	$('#pluginSearch').on('keyup', function() {
-		var val = $(this).val().toLowerCase();
-		$("#submissionListBody tr").filter(function() {
-			$(this).toggle($(this).text().toLowerCase().indexOf(val) > -1)
-		});
-	});
-
-	// Seleção
-	$('#masterCheck, #btnSelectAll').click(function() {
-		$('.sub-check:visible').prop('checked', true);
-	});
-	$('#btnDeselectAll').click(function() {
-		$('.sub-check').prop('checked', false);
-	});
-
-	$('#startExport').click(function() {
-		selectedIds = [];
-		$('.sub-check:checked').each(function() {
-			selectedIds.push($(this).val());
-		});
-
-		if (selectedIds.length === 0) {
-			alert('Por favor, selecione ao menos um livro.');
-			return;
+	// Handlers de Página
+	$('#btnNextPage').click(function() {
+		if ((currentOffset + currentCount) < totalItems) {
+			currentOffset += currentCount;
+			loadPage();
 		}
+	});
+	$('#btnPrevPage').click(function() {
+		if (currentOffset > 0) {
+			currentOffset -= currentCount;
+			loadPage();
+		}
+	});
+	$('#itemsPerPage').change(function() {
+		currentCount = parseInt($(this).val());
+		currentOffset = 0;
+		loadPage();
+	});
+	$('#pluginSearch').on('keyup', function() {
+		clearTimeout(window.searchTimer);
+		window.searchTimer = setTimeout(function() {
+			currentOffset = 0;
+			loadPage();
+		}, 500);
+	});
 
-		if (!confirm('O sistema iniciará ' + selectedIds.length + ' downloads. Deseja continuar?')) return;
+	// Checkbox Logic
+	$(document).on('change', '.sub-check', function() {
+		var id = $(this).val();
+		if ($(this).is(':checked')) {
+			selectedIds.add(id);
+		} else {
+			selectedIds.delete(id);
+			isGlobalSelection = false;
+		}
+		updateBanner();
+	});
 
+	$('#masterCheck').change(function() {
+		var isChecked = $(this).is(':checked');
+		$('.sub-check').prop('checked', isChecked).trigger('change');
+		if (!isChecked) isGlobalSelection = false;
+	});
+
+	function updateBanner() {
+		var allCheckedInPage = $('.sub-check:checked').length === $('.sub-check').length && $('.sub-check').length > 0;
+		if (allCheckedInPage && !isGlobalSelection && totalItems > $('.sub-check').length) {
+			$('#globalSelectBanner').show();
+		} else if (isGlobalSelection) {
+			$('#globalSelectBanner').html('<strong>Todas as '+totalItems+' publicações da editora estão selecionadas.</strong> <a id="btnClearGlobal">Limpar seleção?</a>').show();
+		} else {
+			$('#globalSelectBanner').hide();
+		}
+	}
+
+	$(document).on('click', '#btnSelectGlobal', function() {
+		isGlobalSelection = true;
+		updateBanner();
+	});
+
+	$(document).on('click', '#btnClearGlobal', function() {
+		isGlobalSelection = false;
+		selectedIds.clear();
+		$('.sub-check, #masterCheck').prop('checked', false);
+		updateBanner();
+	});
+
+	// Export ORCHESTRATOR
+	$('#startExport').click(function() {
+		if (isRunning) return;
+
+		if (isGlobalSelection) {
+			// Buscar lista completa de IDs
+			addLog('Iniciando seleção GLOBAL. Buscando IDs de todas as publicações...');
+			$.get(baseUrl + '&verb=allIds', { searchPhrase: $('#pluginSearch').val() }, function(res) {
+				if (res.status) {
+					queue = res.content;
+					startWaterfall();
+				}
+			});
+		} else {
+			queue = Array.from(selectedIds);
+			if (queue.length === 0) {
+				alert('Selecione ao menos uma publicação.');
+				return;
+			}
+			startWaterfall();
+		}
+	});
+
+	function startWaterfall() {
 		isRunning = true;
 		currentIndex = 0;
 		$('#processContainer').show();
 		$('#startExport').prop('disabled', true);
 		$('#log').empty();
-		updateProgress();
+		addLog('🚀 Iniciando download em massa de ' + queue.length + ' itens...');
 		processNext();
-	});
+	}
 
-	$('#btnCancel').click(function() {
-		isRunning = false;
-		addLog('Processo interrompido pelo usuário.');
-		$('#startExport').prop('disabled', false);
-	});
+	function processNext() {
+		if (!isRunning || currentIndex >= queue.length) {
+			if (currentIndex >= queue.length) {
+				addLog('🏁 PROCESSO CONCLUÍDO!');
+			}
+			$('#startExport').prop('disabled', false);
+			isRunning = false;
+			return;
+		}
 
-	function updateProgress() {
-		var perc = (currentIndex / selectedIds.length) * 100;
-		$('#progressBar').val(perc);
-		$('#progressText').text(currentIndex + '/' + selectedIds.length);
+		var id = queue[currentIndex];
+		$('#progressText').text((currentIndex + 1) + ' / ' + queue.length);
+		$('#progressBar').val(((currentIndex + 1) / queue.length) * 100);
+
+		$.get(baseUrl + '&verb=prepare&id=' + id, function(res) {
+			if (res.status) {
+				addLog('OK [' + id + ']: Arquivo preparado.');
+				window.location.href = baseUrl + '&verb=download&token=' + res.content.token;
+				currentIndex++;
+				setTimeout(processNext, 1200);
+			} else {
+				addLog('❌ ERRO [' + id + ']: ' + res.content);
+				currentIndex++;
+				processNext();
+			}
+		}).fail(function() {
+			addLog('❌ Falha crítica no servidor ao processar ID ' + id);
+			isRunning = false;
+			$('#startExport').prop('disabled', false);
+		});
 	}
 
 	function addLog(msg) {
 		$('#log').prepend('<div>[' + new Date().toLocaleTimeString() + '] ' + msg + '</div>');
 	}
 
-	function processNext() {
-		if (!isRunning || currentIndex >= selectedIds.length) {
-			if (currentIndex >= selectedIds.length) {
-				addLog('🏁 PROCESSO CONCLUÍDO COM SUCESSO!');
-			}
-			$('#startExport').prop('disabled', false);
-			return;
-		}
-
-		var id = selectedIds[currentIndex];
-		var $row = $('tr[data-id="'+id+'"]');
-		var title = $row.find('.title-cell').text();
-
-		$row.find('.status-cell').text('Processando...').attr('class', 'status-cell status-working');
-		addLog('Preparando: ' + title);
-
-		$.get(baseUrl + '&verb=prepare&id=' + id, function(res) {
-			if (res.status) {
-				addLog('Baixando: ' + title);
-				$row.find('.status-cell').text('Concluído').attr('class', 'status-cell status-done');
-				
-				// Iniciar download
-				window.location.href = baseUrl + '&verb=download&token=' + res.content.token;
-
-				currentIndex++;
-				updateProgress();
-				// Pequeno atraso para dar tempo ao navegador de processar o download
-				setTimeout(processNext, 1500);
-			} else {
-				addLog('❌ ERRO em ' + title + ': ' + res.content);
-				$row.find('.status-cell').text('Erro').attr('class', 'status-cell status-error');
-				currentIndex++;
-				updateProgress();
-				processNext();
-			}
-		}).fail(function() {
-			addLog('❌ Falha na comunicação com o servidor.');
-			isRunning = false;
-		});
-	}
+	$('#btnCancel').click(function() {
+		isRunning = false;
+		addLog('⏳ Interrompendo após a conclusão do item atual...');
+	});
 });
 </script>
