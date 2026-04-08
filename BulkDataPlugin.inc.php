@@ -286,7 +286,8 @@ class BulkDataPlugin extends GenericPlugin {
 	}
 
 	private function _importFiles($tempDir, $submission, $publication, $contextId, $request, &$logs) {
-		$submissionFileService = Services::get('submissionFile');
+		$submissionFileDao = DAORegistry::getDAO('SubmissionFileDAO');
+		$fileDao = DAORegistry::getDAO('FileDAO');
 		
 		// 5.1 Processar PDFs
 		$pdfPaths = glob($tempDir . '/pdfs/*.pdf');
@@ -302,19 +303,43 @@ class BulkDataPlugin extends GenericPlugin {
 			foreach ($pdfPaths as $pdfPath) {
 				$fileName = basename($pdfPath);
 				
-				// Copiar para local temporário seguro
-				$stagePath = Config::getVar('files', 'files_dir') . '/temp/' . $fileName;
-				copy($pdfPath, $stagePath);
+				// A. Criar entrada na tabela 'files'
+				$fileObj = $fileDao->newDataObject();
+				$fileObj->setData('mimetype', 'application/pdf');
+				$fileObj->setData('path', 'temp/' . $fileName); // Temporário
+				$fileId = $fileDao->insertObject($fileObj);
 
+				// B. Criar entrada na tabela 'submission_files'
 				$submissionFile = new SubmissionFile();
 				$submissionFile->setData('submissionId', $submission->getId());
+				$submissionFile->setData('fileId', $fileId);
 				$submissionFile->setData('uploaderUserId', $request->getUser()->getId());
 				$submissionFile->setData('fileStage', 17); // SUBMISSION_FILE_PROOF
 				$submissionFile->setData('assocType', ASSOC_TYPE_REPRESENTATION);
 				$submissionFile->setData('assocId', $publicationFormat->getId());
+				$submissionFile->setData('createdAt', Core::getCurrentDate());
+				$submissionFile->setData('updatedAt', Core::getCurrentDate());
 
-				$submissionFile = $submissionFileService->add($submissionFile, $stagePath);
-				$logs[] = ['type' => 'success', 'msg' => 'PDF Importado: ' . $fileName];
+				$submissionFileId = $submissionFileDao->insertObject($submissionFile);
+
+				// C. Criar entrada na tabela 'submission_file_revisions'
+				// OMP 3.3.0 exige revisão vinculando sub_file_id ao file_id
+				$dbstr = $submissionFileDao->getDataSource();
+				$dbstr->execute('INSERT INTO submission_file_revisions (submission_file_id, file_id) VALUES (?, ?)', [(int)$submissionFileId, (int)$fileId]);
+
+				// D. Mover arquivo para o local final esperado pelo OMP
+				// Padrão: submissions/{subId}/proof/{subFileId}-{revisionId}.pdf
+				$targetDir = Config::getVar('files', 'files_dir') . '/submissions/' . $submission->getId() . '/proof/';
+				if (!is_dir($targetDir)) mkdir($targetDir, 0777, true);
+				
+				$finalPath = $targetDir . $submissionFileId . '-1.pdf';
+				copy($pdfPath, $finalPath);
+				
+				// Atualizar o path no DB para refletir o local real
+				$fileObj->setData('path', 'submissions/' . $submission->getId() . '/proof/' . $submissionFileId . '-1.pdf');
+				$fileDao->updateObject($fileObj);
+
+				$logs[] = ['type' => 'success', 'msg' => 'PDF Importado e Vinculado: ' . $fileName];
 			}
 		}
 
