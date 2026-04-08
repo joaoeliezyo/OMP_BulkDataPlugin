@@ -151,7 +151,7 @@ class BulkDataPlugin extends GenericPlugin {
 		]);
 
 		// Capítulos (se existirem)
-		$chapterDao = DAORegistry::getDAO('SubmissionChapterDAO');
+		$chapterDao = DAORegistry::getDAO('ChapterDAO');
 		$chapters = $chapterDao->getByPublicationId($publication->getId());
 		while ($chapter = $chapters->next()) {
 			$chapterAuthors = [];
@@ -200,13 +200,19 @@ class BulkDataPlugin extends GenericPlugin {
 		$ch = curl_init();
 		curl_setopt($ch, CURLOPT_URL, $url);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-		curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+		curl_setopt($ch, CURLOPT_TIMEOUT, 10);
 		// Ignorar SSL se houver (para dev)
 		curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
 		curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
 		$html = curl_exec($ch);
-		curl_close($ch);
 		
+		if (curl_errno($ch)) {
+			error_log('BulkDataPlugin: cURL error capturing page: ' . curl_error($ch));
+			curl_close($ch);
+			return '<!-- Error capturing page via cURL -->';
+		}
+		
+		curl_close($ch);
 		return $html;
 	}
 
